@@ -21,7 +21,7 @@ import moment from "moment";
 import { Notice } from "obsidian";
 
 import { ApiQueue } from "./ApiQueue";
-import { createClient } from "./TogglClient";
+import { createClient, TogglApiClient } from "./TogglClient";
 
 type ReportOptions = {
   start_date: ISODate;
@@ -33,7 +33,7 @@ type ReportOptions = {
 
 /** Wrapper class for performing common operations on the Toggl API. */
 export default class TogglAPI {
-  private _api: typeof import("toggl-client");
+  private _api: TogglApiClient;
   private _settings: PluginSettings;
   private _queue = new ApiQueue();
 
@@ -57,12 +57,12 @@ export default class TogglAPI {
    * @throws an Error when the Toggl Track API cannot be reached.
    */
   public async testConnection() {
-    await this._api.workspaces.list();
+    await this._api.getWorkspaces();
   }
 
   /** @returns list of the user's workspaces. */
   public async getWorkspaces(): Promise<TogglWorkspace[]> {
-    const response = await this._api.workspaces.list().catch(handleError);
+    const response = await this._api.getWorkspaces().catch(handleError);
 
     return response.map(
       (w: any) =>
@@ -75,11 +75,18 @@ export default class TogglAPI {
 
   /** @returns list of the user's clients. */
   public async getClients(): Promise<ClientsResponseItem[]> {
-    const clients = (await this._api.workspaces
-      .clients(this._settings.workspace.id)
-      .catch(handleError)) as ClientsResponseItem[];
+    const clients = await this._api
+      .getClients(parseInt(this._settings.workspace.id))
+      .catch(handleError);
 
-    return clients;
+    // Transform to match expected interface
+    return clients.map((client) => ({
+      ...client,
+      wid:
+        client.wid ||
+        client.workspace_id ||
+        parseInt(this._settings.workspace.id),
+    })) as ClientsResponseItem[];
   }
 
   /**
@@ -88,11 +95,21 @@ export default class TogglAPI {
    * use the computed property cachedProjects instead.
    */
   public async getProjects(): Promise<ProjectsResponseItem[]> {
-    const projects = (await this._api.workspaces
-      .projects(this._settings.workspace.id)
-      .catch(handleError)) as ProjectsResponseItem[];
+    const projects = await this._api
+      .getProjects(parseInt(this._settings.workspace.id))
+      .catch(handleError);
 
-    return projects.filter((p) => p.active);
+    // Transform to match expected interface and filter active projects
+    return projects
+      .filter((p: any) => p.active)
+      .map((project) => ({
+        ...project,
+        actual_hours: project.actual_hours || 0,
+        cid: project.cid || project.client_id,
+        rate_last_updated: project.rate_last_updated || null,
+        server_deleted_at: project.server_deleted_at || null,
+        wid: project.wid || project.workspace_id,
+      })) as ProjectsResponseItem[];
   }
 
   /**
@@ -101,11 +118,10 @@ export default class TogglAPI {
    * use the computed property cachedTags instead.
    */
   public async getTags(): Promise<TagsResponseItem[]> {
-    const tags = (await this._api.workspaces
-      .tags(this._settings.workspace.id)
-      .catch(handleError)) as TagsResponseItem[];
-
-    return tags;
+    const tags = await this._api
+      .getTags(parseInt(this._settings.workspace.id))
+      .catch(handleError);
+    return tags as TagsResponseItem[];
   }
 
   /**
@@ -114,19 +130,55 @@ export default class TogglAPI {
   public async getRecentTimeEntries(): Promise<
     SearchTimeEntriesResponseItem[]
   > {
-    const response: SearchTimeEntriesResponseItem[] = await this._api.reports
-      .details(this._settings.workspace.id, {
-        end_date: moment().format("YYYY-MM-DD"),
-        order_by: "date",
-        order_dir: "desc",
-        start_date: moment().subtract(9, "day").format("YYYY-MM-DD"),
-      })
+    const startDate = moment().subtract(9, "day").format("YYYY-MM-DD");
+    const endDate = moment().format("YYYY-MM-DD");
+
+    const response = await this._api
+      .getTimeEntries(startDate, endDate)
       .catch(handleError);
 
-    return response.filter(
-      (item) =>
-        Array.isArray(item.time_entries) && item.time_entries.length > 0,
-    );
+    // Group time entries by user and project to match the old API format
+    const groupedEntries: { [key: string]: any[] } = {};
+
+    response.forEach((entry: any) => {
+      const key = `${entry.user_id}_${entry.project_id || "no_project"}_${
+        entry.description || "no_desc"
+      }`;
+      if (!groupedEntries[key]) {
+        groupedEntries[key] = [];
+      }
+      groupedEntries[key].push({
+        at: entry.at,
+        id: entry.id,
+        seconds: entry.duration > 0 ? entry.duration : 0,
+        start: entry.start,
+        stop: entry.stop || entry.start,
+      });
+    });
+
+    // Convert to the expected SearchTimeEntriesResponseItem format
+    return Object.keys(groupedEntries)
+      .filter((key) => groupedEntries[key].length > 0)
+      .map((key, index) => {
+        const entries = groupedEntries[key];
+        const firstEntry = response.find((e) =>
+          entries.some((entry) => entry.id === e.id),
+        );
+
+        return {
+          description: firstEntry?.description || "",
+
+          hourly_rate_in_cents: null as null,
+          // API v9 doesn't return username directly
+          project_id: firstEntry?.project_id || null,
+          row_number: index + 1,
+          tag_ids: (firstEntry?.tag_ids || []).map(String),
+          task_id: null as null,
+          time_entries: entries,
+          user_id: firstEntry?.user_id || 0,
+          username: "User",
+        };
+      }) as SearchTimeEntriesResponseItem[];
   }
 
   /**
@@ -139,13 +191,32 @@ export default class TogglAPI {
    *       access the latest report, subscribe to the store {@link dailyReport}
    */
   public async getDailySummary(): Promise<ProjectsSummaryResponseItem[]> {
-    const response: ProjectsSummaryResponseItem[] = await this._api.reports
-      .projectsSummary(this._settings.workspace.id, {
-        start_date: moment().format("YYYY-MM-DD"),
-      })
-      .catch(handleError);
+    const today = moment().format("YYYY-MM-DD");
+    const workspaceId = parseInt(this._settings.workspace.id);
 
-    return response;
+    try {
+      const response = await this._api
+        .getSummaryReport(workspaceId, {
+          end_date: today,
+          start_date: today,
+        })
+        .catch(handleError);
+
+      // Transform the response to match the expected format
+      if (response.groups) {
+        return response.groups.map((group: any) => ({
+          id: group.id,
+          name: group.name,
+          seconds: group.seconds,
+          // Add other fields as needed
+        }));
+      }
+
+      return [];
+    } catch (error) {
+      console.error("Error fetching daily summary:", error);
+      return [];
+    }
   }
 
   /**
@@ -155,33 +226,37 @@ export default class TogglAPI {
    * @returns The report.
    */
   public async getSummary(options: ReportOptions) {
-    const response = (await this._api.reports.summary(
-      this._settings.workspace.id,
-      {
-        ...options,
-        collapse: true,
-        grouping: "projects",
-        sub_grouping: "time_entries",
-        // order_field: 'duration',
-        // order_desc: 'on'
-      },
-    )) as SummaryReportResponse;
-
-    return response;
+    const workspaceId = parseInt(this._settings.workspace.id);
+    const response = await this._api
+      .getSummaryReport(workspaceId, options)
+      .catch(handleError);
+    return response as SummaryReportResponse;
   }
 
   public async getSummaryTimeChart(options: ReportOptions) {
-    const response = (await this._api.reports.totals(
-      this._settings.workspace.id,
-      {
-        ...options,
-        collapse: true,
-        grouping: "projects",
-        with_graph: true,
-      },
-    )) as SummaryTimeChart;
+    const workspaceId = parseInt(this._settings.workspace.id);
 
-    return response;
+    try {
+      const response = await this._api
+        .getSummaryReport(workspaceId, {
+          ...options,
+        })
+        .catch(handleError);
+
+      // Transform the response to match the expected SummaryTimeChart format
+      return {
+        graph: response.graph || [],
+        resolution: getResolutionFromDateRange(
+          options.start_date,
+          options.end_date,
+        ),
+        total_seconds: response.total_seconds || 0,
+        ...response,
+      } as SummaryTimeChart;
+    } catch (error) {
+      console.error("Error fetching summary time chart:", error);
+      throw error;
+    }
   }
 
   /**
@@ -195,13 +270,26 @@ export default class TogglAPI {
   public async getDetailedReport(
     options: ReportOptions,
   ): Promise<DetailedReportResponseItem[]> {
-    const response = await this._queue.queue<DetailedReportResponseItem[]>(() =>
-      this._api.reports.detailsAll(this._settings.workspace.id, {
-        ...options,
-        grouped: true, // grouping means less pages, so less requests and faster results.
-      }),
+    const workspaceId = parseInt(this._settings.workspace.id);
+
+    const response = await this._queue.queue<any>(() =>
+      this._api.getDetailedReport(workspaceId, options),
     );
-    return response;
+
+    // Transform the response to match the expected format
+    if (Array.isArray(response)) {
+      return response;
+    } else if (response && Array.isArray(response.data)) {
+      return response.data;
+    } else if (
+      response &&
+      response.results &&
+      Array.isArray(response.results)
+    ) {
+      return response.results;
+    } else {
+      return [];
+    }
   }
 
   /**
@@ -210,37 +298,119 @@ export default class TogglAPI {
    * @param entry the description and project to start a timer on.
    */
   public async startTimer(entry: TimeEntryStart): Promise<TimeEntry> {
-    return this._api.timeEntries
-      .start({
-        ...entry,
-        created_with: "Toggl Track for Obsidian",
-        // https://developers.track.toggl.com/docs/tracking/index.html#:~:text=for%20example%20120.-,To%20create%20a%20time%20entry,-that%20started%20and
-        // "To create a time entry that started and continues to be running, the
-        // duration field is the negative UNIX timestamp for when it started."
-        duration: -moment().unix(),
-        start: moment().format(),
-        stop: null,
-        workspace_id: parseInt(this._settings.workspace.id),
-      })
+    const workspaceId = parseInt(this._settings.workspace.id);
+
+    const timeEntry = {
+      billable: entry.billable || false,
+      created_with: "Toggl Track for Obsidian",
+      description: entry.description,
+      duration: -moment().unix(),
+      project_id: entry.project_id,
+      // Negative duration for running timer
+      start: moment().format(),
+
+      stop: null as null,
+      tags: entry.tags || [],
+      workspace_id: workspaceId,
+    };
+
+    const result = await this._api
+      .createTimeEntry(workspaceId, timeEntry)
       .catch(handleError);
+
+    // Transform the result to match the expected TimeEntry format
+    return {
+      ...entry,
+      at: result.at,
+      duration: result.duration,
+      id: result.id,
+      project_id: result.project_id,
+      server_deleted_at: result.server_deleted_at,
+      start: result.start,
+      stop: result.stop,
+      tag_ids: result.tag_ids || [],
+      tags: result.tags || [],
+      user_id: result.user_id,
+      workspace_id: result.workspace_id,
+    } as TimeEntry;
   }
 
   /**
    * Stops the currently running timer.
    */
   public async stopTimer(entry: TimeEntry): Promise<TimeEntry> {
-    return this._api.timeEntries.stop(entry).catch(handleError);
+    const workspaceId = parseInt(this._settings.workspace.id);
+    const result = await this._api
+      .stopTimeEntry(workspaceId, entry.id)
+      .catch(handleError);
+
+    // Transform the result to match the expected TimeEntry format
+    return {
+      ...entry,
+      at: result.at,
+      duration: result.duration,
+      id: result.id,
+      project_id: result.project_id,
+      server_deleted_at: result.server_deleted_at,
+      start: result.start,
+      stop: result.stop,
+      tag_ids: result.tag_ids || [],
+      tags: result.tags || [],
+      user_id: result.user_id,
+      workspace_id: result.workspace_id,
+    } as TimeEntry;
   }
 
   /**
    * Returns the currently running timer, if any.
    */
-  public async getCurrentTimer(): Promise<TimeEntry> {
-    return this._api.timeEntries.current();
+  public async getCurrentTimer(): Promise<TimeEntry | null> {
+    const result = await this._api.getCurrentTimeEntry();
+
+    if (!result) {
+      return null;
+    }
+
+    // Transform the result to match the expected TimeEntry format
+    return {
+      at: result.at,
+      description: result.description || "",
+      duration: result.duration,
+      id: result.id,
+      project_id: result.project_id,
+      server_deleted_at: result.server_deleted_at,
+      start: result.start,
+      stop: result.stop,
+      tag_ids: result.tag_ids || [],
+      tags: result.tags || [],
+      user_id: result.user_id,
+      workspace_id: result.workspace_id,
+    } as TimeEntry;
+  }
+}
+
+// Helper function to determine resolution from date range
+function getResolutionFromDateRange(
+  startDate: string,
+  endDate: string,
+): string {
+  const start = moment(startDate);
+  const end = moment(endDate);
+  const diffDays = end.diff(start, "days");
+
+  if (diffDays <= 1) {
+    return "hour";
+  } else if (diffDays <= 7) {
+    return "day";
+  } else if (diffDays <= 31) {
+    return "day";
+  } else {
+    return "month";
   }
 }
 
 const handleError = (error: unknown) => {
   console.error("Toggl API error: ", error);
   new Notice("Error communicating with Toggl API: " + error);
+  throw error;
 };

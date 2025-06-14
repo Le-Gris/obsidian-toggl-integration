@@ -35,6 +35,7 @@ export type TimeEntryStart = {
   project_id: ProjectId;
   tag_ids?: TagId[];
   tags?: string[];
+  billable?: boolean;
 };
 
 export type TimeEntry = TimeEntryStart & {

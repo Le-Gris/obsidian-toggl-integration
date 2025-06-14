@@ -23,7 +23,7 @@ SUMMARY WEEK
 
 This will result in something like this:
 
-![example-getting-started](https://user-images.githubusercontent.com/23149353/148294480-b2893e21-0fa9-421c-96f2-9b74c7ba65e8.png)
+![[8. Attachments/a34cb82295141b9270061e3a375f0e36_MD5.png]]
 
 Pretty neat! With just a two-word command, you can generate a highly informative overview right from Obsidian. I highly encourage you to try this yourself in your Obsidian client.
 

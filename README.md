@@ -1,4 +1,4 @@
-[![GitHub tag (Latest by date)](https://img.shields.io/github/v/tag/mcndt/obsidian-toggl-integration)](https://github.com/mcndt/obsidian-toggl-integration/releases) ![GitHub all releases](https://img.shields.io/github/downloads/mcndt/obsidian-toggl-integration/total)
+[![[8. Attachments/6cdddeef521829eeb96122de899a1c9e_MD5.svg]]](https://github.com/mcndt/obsidian-toggl-integration/releases) ![[8. Attachments/79fe68951f8f34666d264f61c376fa76_MD5.svg]]
 
 # Toggl Track Integration for Obsidian
 
@@ -11,7 +11,7 @@ Add integration with the Toggl Track API to manage your timers inside Obsidian.
 - Get a summary of your day in the side panel
 - Create, start, and stop a new timer using the command palette, or restart an recent one
 
-![](https://raw.githubusercontent.com/mcndt/obsidian-toggl-integration/master/demo2.gif)
+![[8. Attachments/3e1145e236de0d05591e06e1c34703cf_MD5.gif]]
 
 ## Rendering time reports inside your notes
 
@@ -26,7 +26,7 @@ PAST 7 DAYS
 
 Will result in something like:
 
-![example-summary-report](https://user-images.githubusercontent.com/23149353/148293946-4e70ede9-0a9f-401e-af4b-f954caaeed84.png)
+![[8. Attachments/37242207f66338ffc8f01cfcffbd315c_MD5.png]]
 
 You can find a full tutorial and reference on rendering time reports in the [plugin wiki](<https://github.com/mcndt/obsidian-toggl-integration/wiki/Toggl-Query-Language-(TQL)-Reference>).
 
@@ -36,7 +36,7 @@ Configuring this plugin requires you to first request an API token from Toggl. M
 
 To set up this plugin, simply enter your API token in the settings tab, click connect and select the Toggl Workspace you wish to use.
 
-![settings](https://raw.githubusercontent.com/mcndt/obsidian-toggl-integration/master/settings.png)
+![[8. Attachments/25ade342b364c59727c60573a3cab4fd_MD5.png]]
 
 ## Use with other plugins:
 
